@@ -64,6 +64,30 @@ export default function App() {
     }
   };
 
+  const handleCopyPress = async () => {
+    try {
+      if (!summary) return;
+      if (Platform.OS === 'web') {
+        if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(summary);
+          window.alert('복사되었습니다.');
+          return;
+        }
+        const tmp = document.createElement('textarea');
+        tmp.value = summary;
+        document.body.appendChild(tmp);
+        tmp.select();
+        document.execCommand('copy');
+        document.body.removeChild(tmp);
+        window.alert('복사되었습니다.');
+        return;
+      }
+      Alert.alert('알림', '모바일에서 복사하려면 expo-clipboard 설치가 필요합니다.');
+    } catch (e) {
+      if (Platform.OS === 'web') window.alert('복사에 실패했습니다.'); else Alert.alert('알림', '복사에 실패했습니다.');
+    }
+  };
+
 
   return (
     <LinearGradient
@@ -114,6 +138,11 @@ export default function App() {
               <ScrollView style={styles.resultScroll} contentContainerStyle={{ paddingBottom: 4 }}>
                 <Text style={styles.resultText}>{summary}</Text>
               </ScrollView>
+              <View style={styles.copyButtonContainerSmall}>
+                <TouchableOpacity style={styles.copyButtonSmall} activeOpacity={0.85} onPress={handleCopyPress}>
+                  <Text style={styles.copyButtonSmallText}>복사하기</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
         </View>
@@ -231,5 +260,24 @@ const styles = StyleSheet.create({
     color: '#E9ECFF',
     lineHeight: 24,
     fontSize: 16,
+  },
+  copyButtonContainerSmall: {
+    marginTop: 10,
+    alignItems: 'flex-end',
+  },
+  copyButtonSmall: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderColor: 'rgba(255,255,255,0.22)',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  copyButtonSmallText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
