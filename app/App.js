@@ -64,6 +64,7 @@ export default function App() {
     }
   };
 
+
   return (
     <LinearGradient
       colors={["#0B1437", "#14224A", "#1E2E66", "#2C3E8F"]}

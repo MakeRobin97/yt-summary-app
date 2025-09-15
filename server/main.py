@@ -15,12 +15,11 @@ from youtube_transcript_api import (
     NoTranscriptFound,
 )
 
-
 # .env 로드 (server 폴더 기준)
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", encoding="utf-8", override=True)
 
-# 직접 입력용 API 키(원하면 여기에 붙여넣기). 비워두면 환경변수 사용.
-OPENAI_API_KEY = ""
+# 환경변수만 사용 (하드코딩 금지)
+
 
 app = FastAPI(title="yt-summary-api")
 
@@ -112,7 +111,7 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
 
 
 def summarize_with_openai(transcript_text: str, lang_code: Optional[str]) -> str:
-    api_key = OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not set")
 
