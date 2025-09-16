@@ -5,6 +5,7 @@ from typing import Optional
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 import os
+import time
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -14,6 +15,7 @@ from youtube_transcript_api import (
     TranscriptsDisabled,
     NoTranscriptFound,
 )
+import youtube_transcript_api as yta
 
 # .env 로드 (server 폴더 기준)
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", encoding="utf-8", override=True)
@@ -42,6 +44,16 @@ def root():
     return {"message": "YT Summary API"}
 
 
+@app.get("/version")
+def version():
+    return {
+        "commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or None,
+        "branch": os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH") or None,
+        "youtube_transcript_api": getattr(yta, "__version__", None),
+        "openai": os.getenv("OPENAI_API_KEY") is not None,
+    }
+
+
 class SummarizeRequest(BaseModel):
     url: str
 
@@ -64,9 +76,34 @@ def extract_video_id(youtube_url: str) -> Optional[str]:
         return None
 
 
+def _apply_optional_proxy_from_env() -> None:
+    proxy = os.getenv("YOUTUBE_PROXY")
+    if proxy:
+        os.environ.setdefault("HTTP_PROXY", proxy)
+        os.environ.setdefault("HTTPS_PROXY", proxy)
+
+
+def _with_backoff(callable_fn, *args, **kwargs):
+    delays = [1, 3, 7, 12]
+    last_err = None
+    for delay in [0] + delays:
+        if delay:
+            time.sleep(delay)
+        try:
+            return callable_fn(*args, **kwargs)
+        except Exception as e:
+            msg = str(e)
+            last_err = e
+            if any(tok in msg for tok in ["Too Many Requests", "429", "sorry/index"]):
+                continue
+            raise
+    raise last_err
+
+
 def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
+    _apply_optional_proxy_from_env()
     # youtube-transcript-api는 정적 메서드 list_transcripts(video_id)를 사용합니다.
-    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+    transcript_list = _with_backoff(YouTubeTranscriptApi.list_transcripts, video_id)
     lang_code: Optional[str] = None
     transcript = None
 
@@ -96,7 +133,7 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
             except Exception:
                 raise NoTranscriptFound(video_id)
 
-    chunks = transcript.fetch()
+    chunks = _with_backoff(transcript.fetch)
     texts: list[str] = []
     for part in chunks:
         t = getattr(part, "text", None)
