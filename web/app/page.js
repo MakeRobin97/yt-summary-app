@@ -7,7 +7,14 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+  // 배포 환경에서 모바일 혼합 콘텐츠(https 페이지 -> http API) 차단 방지
+  let API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+  if (typeof window !== "undefined") {
+    const isHttpsPage = window.location?.protocol === "https:";
+    if (isHttpsPage && API_BASE.startsWith("http://")) {
+      API_BASE = API_BASE.replace(/^http:\/\//, "https://");
+    }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -85,7 +92,7 @@ export default function Home() {
             style={{ flex: 1, height: 44, borderRadius: 10, border: "1px solid rgba(255,255,255,0.22)", background:"rgba(10,20,50,0.35)", color:"#fff", padding:"0 12px" }}
           />
           <button type="submit" disabled={loading} style={{ height: 44, borderRadius: 10, background: "#6A7DFF", color: "#fff", padding: "0 16px", border: 0 }}>
-            {loading ? "요약 중..." : "요약하기"}
+            {loading ? "요약 중..." : "요약"}
           </button>
         </form>
         {error && (

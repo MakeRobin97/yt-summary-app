@@ -17,7 +17,7 @@ export const metadata = {
     default: '유튜브 요약 프로그램 - 자막 기반 자동 요약',
     template: '%s | 유튜브 요약 프로그램',
   },
-  description: '유튜브 링크만 붙여넣으면 자막을 분석해 핵심 요약을 제공합니다. 유튜브 요약, 유튜브 자막 요약 프로그램.',
+  description: '유튜브 링크만 붙여넣으면 요약을 자동으로 생성해줍니다.',
   keywords: [
     '유튜브 요약',
     '유튜브 자막',
@@ -47,7 +47,10 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
+    <html lang="ko">
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         {children}
       </body>
