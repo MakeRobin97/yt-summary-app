@@ -10,4 +10,3 @@ services:
       envVars:
           - key: OPENAI_API_KEY
             sync: false
-      pythonVersion: 3.12
