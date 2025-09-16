@@ -16,6 +16,9 @@ from youtube_transcript_api import (
     NoTranscriptFound,
 )
 import youtube_transcript_api as yta
+import yt_dlp
+import tempfile
+import shutil
 
 # .env 로드 (server 폴더 기준)
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", encoding="utf-8", override=True)
@@ -50,7 +53,9 @@ def version():
         "commit": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GIT_COMMIT") or None,
         "branch": os.getenv("RENDER_GIT_BRANCH") or os.getenv("GIT_BRANCH") or None,
         "youtube_transcript_api": getattr(yta, "__version__", None),
+        "yt_dlp": getattr(yt_dlp, "__version__", None),
         "openai": os.getenv("OPENAI_API_KEY") is not None,
+        "features": ["youtube_api", "whisper_fallback"],
     }
 
 
@@ -100,51 +105,119 @@ def _with_backoff(callable_fn, *args, **kwargs):
     raise last_err
 
 
-def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
-    _apply_optional_proxy_from_env()
-    # youtube-transcript-api는 정적 메서드 list_transcripts(video_id)를 사용합니다.
-    transcript_list = _with_backoff(YouTubeTranscriptApi.list_transcripts, video_id)
-    lang_code: Optional[str] = None
-    transcript = None
+def _is_429_error(error_msg: str) -> bool:
+    """429 오류인지 확인"""
+    return any(tok in error_msg for tok in ["Too Many Requests", "429", "sorry/index"])
 
-    # 우선순위: 한국어 -> 영어
-    for target in ["ko", "en"]:
-        try:
-            transcript = transcript_list.find_manually_created_transcript([target])
-            lang_code = target
-            break
-        except Exception:
+
+def _download_audio_with_ytdlp(video_id: str) -> str:
+    """yt-dlp로 오디오 다운로드 후 Whisper로 전사"""
+    temp_dir = tempfile.mkdtemp()
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
+            'extractaudio': True,
+            'audioformat': 'wav',
+            'noplaylist': True,
+            'quiet': True,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            ydl.download([url])
+            
+        # 다운로드된 오디오 파일 찾기
+        audio_files = [f for f in os.listdir(temp_dir) if f.endswith(('.wav', '.mp3', '.m4a'))]
+        if not audio_files:
+            raise Exception("오디오 파일을 찾을 수 없습니다.")
+        
+        audio_path = os.path.join(temp_dir, audio_files[0])
+        
+        # Whisper API로 전사
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not set")
+        
+        http_client = httpx.Client(trust_env=False, timeout=120, follow_redirects=True)
+        client = OpenAI(api_key=api_key, http_client=http_client)
+        
+        with open(audio_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="text"
+            )
+        
+        return transcript.strip()
+        
+    finally:
+        # 임시 파일 정리
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
+    """YouTube API로 자막 추출 시도, 429 오류 시 Whisper로 폴백"""
+    try:
+        # 1단계: YouTube API로 자막 추출 시도
+        _apply_optional_proxy_from_env()
+        transcript_list = _with_backoff(YouTubeTranscriptApi.list_transcripts, video_id)
+        lang_code: Optional[str] = None
+        transcript = None
+
+        # 우선순위: 한국어 -> 영어
+        for target in ["ko", "en"]:
             try:
-                transcript = transcript_list.find_transcript([target])
+                transcript = transcript_list.find_manually_created_transcript([target])
                 lang_code = target
                 break
             except Exception:
-                continue
+                try:
+                    transcript = transcript_list.find_transcript([target])
+                    lang_code = target
+                    break
+                except Exception:
+                    continue
 
-    if transcript is None:
-        # 자동 번역으로 한국어 우선 시도, 실패 시 영어 자동 생성본
-        try:
-            transcript = transcript_list.find_transcript(["en"]).translate("ko")
-            lang_code = "ko"
-        except Exception:
+        if transcript is None:
+            # 자동 번역으로 한국어 우선 시도, 실패 시 영어 자동 생성본
             try:
-                transcript = transcript_list.find_transcript(["en"])
-                lang_code = "en"
+                transcript = transcript_list.find_transcript(["en"]).translate("ko")
+                lang_code = "ko"
             except Exception:
-                raise NoTranscriptFound(video_id)
+                try:
+                    transcript = transcript_list.find_transcript(["en"])
+                    lang_code = "en"
+                except Exception:
+                    raise NoTranscriptFound(video_id)
 
-    chunks = _with_backoff(transcript.fetch)
-    texts: list[str] = []
-    for part in chunks:
-        t = getattr(part, "text", None)
-        if t is None and isinstance(part, dict):
-            t = part.get("text")
-        if t:
-            texts.append(t)
-    text = " ".join(texts)
-    if not text:
-        raise NoTranscriptFound(video_id)
-    return text, lang_code
+        chunks = _with_backoff(transcript.fetch)
+        texts: list[str] = []
+        for part in chunks:
+            t = getattr(part, "text", None)
+            if t is None and isinstance(part, dict):
+                t = part.get("text")
+            if t:
+                texts.append(t)
+        text = " ".join(texts)
+        if not text:
+            raise NoTranscriptFound(video_id)
+        return text, lang_code
+        
+    except Exception as e:
+        error_msg = str(e)
+        # 2단계: 429 오류이거나 자막을 찾을 수 없는 경우 Whisper로 폴백
+        if _is_429_error(error_msg) or isinstance(e, (TranscriptsDisabled, NoTranscriptFound)):
+            try:
+                print(f"YouTube API 실패, Whisper로 폴백: {error_msg}")
+                whisper_text = _download_audio_with_ytdlp(video_id)
+                return whisper_text, "whisper"  # Whisper는 언어 자동 감지
+            except Exception as whisper_error:
+                # Whisper도 실패하면 원래 오류를 다시 발생
+                raise Exception(f"YouTube API 실패: {error_msg}. Whisper 폴백도 실패: {str(whisper_error)}")
+        else:
+            # 429가 아닌 다른 오류는 그대로 전파
+            raise
 
 
 def summarize_with_openai(transcript_text: str, lang_code: Optional[str]) -> str:
