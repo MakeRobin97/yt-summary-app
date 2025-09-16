@@ -1,0 +1,7 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+python-dotenv==1.0.1
+openai==1.51.2
+httpx==0.28.1
+youtube-transcript-api==0.6.2
+
