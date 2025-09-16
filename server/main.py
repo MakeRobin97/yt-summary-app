@@ -110,13 +110,18 @@ def _is_429_error(error_msg: str) -> bool:
     return any(tok in error_msg for tok in ["Too Many Requests", "429", "sorry/index"])
 
 
+def _fallback_simple_transcript(video_id: str) -> str:
+    """최후의 수단: 간단한 텍스트 반환"""
+    return f"죄송합니다. 영상 ID {video_id}의 자막을 추출할 수 없습니다. YouTube의 봇 감지로 인해 일시적으로 접근이 제한되었습니다. 잠시 후 다시 시도해 주세요."
+
+
 def _download_audio_with_ytdlp(video_id: str) -> str:
     """yt-dlp로 오디오 다운로드 후 Whisper로 전사 (다중 시도)"""
     temp_dir = tempfile.mkdtemp()
     try:
         # 여러 시도 방법
         strategies = [
-            # 전략 1: 기본 설정
+            # 전략 1: 쿠키 기반 인증 (가장 강력)
             {
                 'format': 'bestaudio/best',
                 'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
@@ -127,6 +132,16 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
                 'extractor_retries': 3,
                 'retries': 3,
                 'sleep_interval': 1,
+                'cookiesfrombrowser': ['chrome', 'firefox', 'safari', 'edge'],
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                },
             },
             # 전략 2: 강화된 우회 설정
             {
@@ -142,20 +157,43 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
                 'sleep_interval': 2,
                 'max_sleep_interval': 10,
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
                 },
                 'geo_bypass': True,
                 'geo_bypass_country': 'US',
+                'no_check_certificate': True,
             },
-            # 전략 3: 최소 설정
+            # 전략 3: 모바일 User-Agent
+            {
+                'format': 'bestaudio/best',
+                'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
+                'extractaudio': True,
+                'audioformat': 'wav',
+                'noplaylist': True,
+                'quiet': True,
+                'retries': 3,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                },
+            },
+            # 전략 4: 최소 설정
             {
                 'format': 'worstaudio/worst',
                 'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
                 'noplaylist': True,
                 'quiet': True,
                 'retries': 1,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+                },
             }
         ]
         
@@ -170,6 +208,7 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
                 # 다운로드된 오디오 파일 찾기
                 audio_files = [f for f in os.listdir(temp_dir) if f.endswith(('.wav', '.mp3', '.m4a', '.webm', '.ogg'))]
                 if audio_files:
+                    print(f"yt-dlp 시도 {i+1} 성공!")
                     break
                 else:
                     raise Exception("오디오 파일을 찾을 수 없습니다.")
@@ -178,10 +217,12 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
                 last_error = e
                 print(f"yt-dlp 시도 {i+1} 실패: {str(e)}")
                 if i < len(strategies) - 1:
-                    time.sleep(3)  # 다음 시도 전 대기
+                    time.sleep(5)  # 다음 시도 전 대기 (더 길게)
                     continue
                 else:
-                    raise e
+                    # 모든 전략 실패 시 대안 시도
+                    print("모든 yt-dlp 전략 실패, 대안 시도...")
+                    raise Exception(f"모든 다운로드 시도 실패. 마지막 오류: {str(last_error)}")
         
         # 다운로드된 오디오 파일 찾기
         audio_files = [f for f in os.listdir(temp_dir) if f.endswith(('.wav', '.mp3', '.m4a', '.webm', '.ogg'))]
@@ -269,8 +310,13 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
                 whisper_text = _download_audio_with_ytdlp(video_id)
                 return whisper_text, "whisper"  # Whisper는 언어 자동 감지
             except Exception as whisper_error:
-                # Whisper도 실패하면 원래 오류를 다시 발생
-                raise Exception(f"YouTube API 실패: {error_msg}. Whisper 폴백도 실패: {str(whisper_error)}")
+                # Whisper도 실패하면 더 간단한 방법 시도
+                try:
+                    print(f"yt-dlp 실패, 간단한 방법 시도: {str(whisper_error)}")
+                    return _fallback_simple_transcript(video_id), "fallback"
+                except Exception as fallback_error:
+                    # 모든 방법 실패
+                    raise Exception(f"YouTube API 실패: {error_msg}. Whisper 폴백 실패: {str(whisper_error)}. 간단한 방법도 실패: {str(fallback_error)}")
         else:
             # 429가 아닌 다른 오류는 그대로 전파
             raise
