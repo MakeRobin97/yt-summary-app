@@ -99,8 +99,17 @@ def _with_backoff(callable_fn, *args, **kwargs):
         except Exception as e:
             msg = str(e)
             last_err = e
+            print(f"백오프 중 오류 발생: {msg}")
+            
+            # 접근 제한 오류인 경우 즉시 실패
+            if _is_access_restricted_error(msg):
+                print(f"접근 제한 오류 감지, 백오프 중단: {msg}")
+                raise e
+            # 429 오류만 재시도
             if any(tok in msg for tok in ["Too Many Requests", "429", "sorry/index"]):
+                print(f"429 오류, 재시도 예정: {msg}")
                 continue
+            print(f"기타 오류, 즉시 실패: {msg}")
             raise
     raise last_err
 
@@ -110,9 +119,66 @@ def _is_429_error(error_msg: str) -> bool:
     return any(tok in error_msg for tok in ["Too Many Requests", "429", "sorry/index"])
 
 
+def _is_access_restricted_error(error_msg: str) -> bool:
+    """접근 제한 관련 오류인지 확인"""
+    restricted_keywords = [
+        "Too Many Requests", "429", "sorry/index",
+        "Sign in to confirm", "bot", "captcha", "verification",
+        "blocked", "forbidden", "access denied", "rate limit",
+        "quota exceeded", "daily limit", "hourly limit",
+        "Client Error", "youtube", "transcript", "retrieve",
+        "Could not retrieve", "transcript for the video",
+        "YouTube 자막 접근 제한", "자막 처리 중 오류",
+        "접근 제한", "제한", "restricted", "limit"
+    ]
+    error_lower = error_msg.lower()
+    is_restricted = any(keyword.lower() in error_lower for keyword in restricted_keywords)
+    if is_restricted:
+        print(f"접근 제한 오류 감지: {error_msg}")
+    return is_restricted
+
+
 def _fallback_simple_transcript(video_id: str) -> str:
     """최후의 수단: 간단한 텍스트 반환"""
     return f"죄송합니다. 영상 ID {video_id}의 자막을 추출할 수 없습니다. YouTube의 봇 감지로 인해 일시적으로 접근이 제한되었습니다. 잠시 후 다시 시도해 주세요."
+
+
+def _try_alternative_extraction(video_id: str) -> str:
+    """대안적 추출 방법 시도"""
+    try:
+        # 방법 1: 다른 YouTube 도메인 시도
+        alternative_urls = [
+            f"https://m.youtube.com/watch?v={video_id}",
+            f"https://youtu.be/{video_id}",
+            f"https://www.youtube.com/embed/{video_id}",
+        ]
+        
+        for url in alternative_urls:
+            try:
+                print(f"대안 URL 시도: {url}")
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': True,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+                    },
+                }
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if info and info.get('title'):
+                        return f"영상 제목: {info.get('title', '알 수 없음')}\n\n죄송합니다. 현재 YouTube의 봇 감지로 인해 자막 추출이 제한되고 있습니다. 영상 제목만 확인할 수 있었습니다. 잠시 후 다시 시도해 주세요."
+            except Exception as e:
+                print(f"대안 URL {url} 실패: {str(e)}")
+                continue
+                
+        # 방법 2: 기본 메시지 반환
+        return f"죄송합니다. 영상 ID {video_id}의 자막을 추출할 수 없습니다. YouTube의 봇 감지로 인해 일시적으로 접근이 제한되었습니다. 잠시 후 다시 시도해 주세요."
+        
+    except Exception as e:
+        return f"죄송합니다. 영상 ID {video_id}의 자막을 추출할 수 없습니다. 오류: {str(e)}"
 
 
 def _download_audio_with_ytdlp(video_id: str) -> str:
@@ -121,7 +187,7 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
     try:
         # 여러 시도 방법
         strategies = [
-            # 전략 1: 쿠키 기반 인증 (가장 강력)
+            # 전략 1: 쿠키 기반 인증 + 강화된 우회
             {
                 'format': 'bestaudio/best',
                 'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
@@ -129,19 +195,28 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
                 'audioformat': 'wav',
                 'noplaylist': True,
                 'quiet': True,
-                'extractor_retries': 3,
-                'retries': 3,
-                'sleep_interval': 1,
+                'extractor_retries': 5,
+                'retries': 5,
+                'sleep_interval': 3,
+                'max_sleep_interval': 15,
                 'cookiesfrombrowser': ['chrome', 'firefox', 'safari', 'edge'],
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
                     'DNT': '1',
                     'Connection': 'keep-alive',
                     'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Cache-Control': 'max-age=0',
                 },
+                'geo_bypass': True,
+                'geo_bypass_country': 'US',
+                'no_check_certificate': True,
             },
             # 전략 2: 강화된 우회 설정
             {
@@ -216,12 +291,18 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
             except Exception as e:
                 last_error = e
                 print(f"yt-dlp 시도 {i+1} 실패: {str(e)}")
+                
+                # 접근 제한 오류인 경우 즉시 실패
+                if _is_access_restricted_error(str(e)):
+                    print("접근 제한 오류로 인해 즉시 실패")
+                    raise Exception(f"YouTube 접근 제한으로 인해 오디오 다운로드가 차단되었습니다: {str(e)}")
+                
                 if i < len(strategies) - 1:
-                    time.sleep(5)  # 다음 시도 전 대기 (더 길게)
+                    time.sleep(3)  # 다음 시도 전 대기
                     continue
                 else:
-                    # 모든 전략 실패 시 대안 시도
-                    print("모든 yt-dlp 전략 실패, 대안 시도...")
+                    # 모든 전략 실패 시 즉시 실패
+                    print("모든 yt-dlp 전략 실패")
                     raise Exception(f"모든 다운로드 시도 실패. 마지막 오류: {str(last_error)}")
         
         # 다운로드된 오디오 파일 찾기
@@ -254,7 +335,7 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
 
 
 def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
-    """YouTube API로 자막 추출 시도, 429 오류 시 Whisper로 폴백"""
+    """YouTube API로 자막 추출 시도, 접근 제한 시 Whisper로 폴백"""
     try:
         # 1단계: YouTube API로 자막 추출 시도
         _apply_optional_proxy_from_env()
@@ -268,12 +349,20 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
                 transcript = transcript_list.find_manually_created_transcript([target])
                 lang_code = target
                 break
-            except Exception:
+            except Exception as e:
+                # 접근 제한 오류인 경우 즉시 실패
+                if _is_access_restricted_error(str(e)):
+                    print(f"자막 검색 중 접근 제한 감지: {str(e)}")
+                    raise e
                 try:
                     transcript = transcript_list.find_transcript([target])
                     lang_code = target
                     break
-                except Exception:
+                except Exception as e2:
+                    # 접근 제한 오류인 경우 즉시 실패
+                    if _is_access_restricted_error(str(e2)):
+                        print(f"자막 검색 중 접근 제한 감지: {str(e2)}")
+                        raise e2
                     continue
 
         if transcript is None:
@@ -281,11 +370,19 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
             try:
                 transcript = transcript_list.find_transcript(["en"]).translate("ko")
                 lang_code = "ko"
-            except Exception:
+            except Exception as e:
+                # 접근 제한 오류인 경우 즉시 실패
+                if _is_access_restricted_error(str(e)):
+                    print(f"자막 번역 중 접근 제한 감지: {str(e)}")
+                    raise e
                 try:
                     transcript = transcript_list.find_transcript(["en"])
                     lang_code = "en"
-                except Exception:
+                except Exception as e2:
+                    # 접근 제한 오류인 경우 즉시 실패
+                    if _is_access_restricted_error(str(e2)):
+                        print(f"자막 검색 중 접근 제한 감지: {str(e2)}")
+                        raise e2
                     raise NoTranscriptFound(video_id)
 
         chunks = _with_backoff(transcript.fetch)
@@ -303,22 +400,28 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
         
     except Exception as e:
         error_msg = str(e)
-        # 2단계: 429 오류이거나 자막을 찾을 수 없는 경우 Whisper로 폴백
-        if _is_429_error(error_msg) or isinstance(e, (TranscriptsDisabled, NoTranscriptFound)):
+        print(f"fetch_transcript_text에서 오류 발생: {error_msg}")
+        
+        # 2단계: 접근 제한 오류이거나 자막을 찾을 수 없는 경우 Whisper로 폴백
+        if _is_access_restricted_error(error_msg) or isinstance(e, (TranscriptsDisabled, NoTranscriptFound)):
             try:
-                print(f"YouTube API 실패, Whisper로 폴백: {error_msg}")
+                print(f"YouTube API 접근 제한 감지, Whisper로 폴백: {error_msg}")
                 whisper_text = _download_audio_with_ytdlp(video_id)
                 return whisper_text, "whisper"  # Whisper는 언어 자동 감지
             except Exception as whisper_error:
-                # Whisper도 실패하면 더 간단한 방법 시도
-                try:
-                    print(f"yt-dlp 실패, 간단한 방법 시도: {str(whisper_error)}")
-                    return _fallback_simple_transcript(video_id), "fallback"
-                except Exception as fallback_error:
-                    # 모든 방법 실패
-                    raise Exception(f"YouTube API 실패: {error_msg}. Whisper 폴백 실패: {str(whisper_error)}. 간단한 방법도 실패: {str(fallback_error)}")
+                # Whisper에서도 접근 제한 오류인지 확인
+                whisper_error_msg = str(whisper_error)
+                print(f"Whisper 폴백 시도 중 오류: {whisper_error_msg}")
+                if _is_access_restricted_error(whisper_error_msg):
+                    print(f"Whisper에서도 접근 제한 감지: {whisper_error_msg}")
+                    raise Exception(f"YouTube API와 Whisper 모두 접근이 제한되었습니다. YouTube의 봇 감지로 인해 현재 요약을 생성할 수 없습니다. 잠시 후 다시 시도해 주세요.")
+                else:
+                    # Whisper에서 다른 종류의 오류 발생
+                    print(f"Whisper 폴백 실패 (기타 오류): {whisper_error_msg}")
+                    raise Exception(f"YouTube API 접근 제한으로 Whisper를 시도했지만 실패했습니다: {whisper_error_msg}")
         else:
-            # 429가 아닌 다른 오류는 그대로 전파
+            # 접근 제한이 아닌 다른 오류는 그대로 전파 (즉시 실패)
+            print(f"접근 제한이 아닌 오류, 즉시 실패: {error_msg}")
             raise
 
 

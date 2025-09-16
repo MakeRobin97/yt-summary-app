@@ -8,6 +8,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState("");
+  const [method, setMethod] = useState("");
 
   // 배포 환경에서 모바일 혼합 콘텐츠(https 페이지 -> http API) 차단 방지
   let API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://yt-summary-api-iu5d.onrender.com";
@@ -18,13 +19,21 @@ export default function Home() {
     }
   }
 
-  const simulateProgress = () => {
-    const steps = [
-      { progress: 10, text: "영상 정보 확인 중..." },
-      { progress: 25, text: "자막 추출 중..." },
-      { progress: 50, text: "자막 분석 중..." },
-      { progress: 75, text: "AI 요약 생성 중..." },
-      { progress: 90, text: "최종 정리 중..." },
+  const simulateProgress = (isWhisper = false) => {
+    const steps = isWhisper ? [
+      { progress: 5, text: "영상 정보 확인 중...", method: "YouTube API 시도 중" },
+      { progress: 10, text: "YouTube API 실패, Whisper로 전환...", method: "Whisper 오디오 다운로드" },
+      { progress: 20, text: "오디오 다운로드 중...", method: "Whisper 오디오 다운로드" },
+      { progress: 40, text: "오디오 전사 중...", method: "Whisper 오디오 전사" },
+      { progress: 60, text: "전사 완료, AI 요약 생성 중...", method: "Whisper + AI 요약" },
+      { progress: 80, text: "요약 정리 중...", method: "Whisper + AI 요약" },
+      { progress: 95, text: "거의 완료...", method: "Whisper + AI 요약" },
+    ] : [
+      { progress: 10, text: "영상 정보 확인 중...", method: "YouTube API" },
+      { progress: 25, text: "자막 추출 중...", method: "YouTube API" },
+      { progress: 50, text: "자막 분석 중...", method: "YouTube API" },
+      { progress: 75, text: "AI 요약 생성 중...", method: "YouTube API + AI" },
+      { progress: 90, text: "최종 정리 중...", method: "YouTube API + AI" },
     ];
     
     let currentStep = 0;
@@ -32,11 +41,12 @@ export default function Home() {
       if (currentStep < steps.length) {
         setProgress(steps[currentStep].progress);
         setProgressText(steps[currentStep].text);
+        setMethod(steps[currentStep].method);
         currentStep++;
       } else {
         clearInterval(interval);
       }
-    }, 1000);
+    }, isWhisper ? 2000 : 1000); // Whisper는 더 오래 걸리므로 2초 간격
     
     return interval;
   };
@@ -55,9 +65,10 @@ export default function Home() {
       setLoading(true);
       setProgress(0);
       setProgressText("요약을 시작합니다...");
+      setMethod("YouTube API");
       
-      // 진행 상황 시뮬레이션 시작
-      progressInterval = simulateProgress();
+      // 진행 상황 시뮬레이션 시작 (기본적으로 YouTube API)
+      progressInterval = simulateProgress(false);
       
       const res = await fetch(`${API_BASE}/summarize`, {
         method: "POST",
@@ -71,21 +82,56 @@ export default function Home() {
       }
       
       const data = await res.json();
+      
+      // 응답에서 사용된 방법 확인 (서버에서 language 필드로 구분)
+      const isWhisperUsed = data.language === "whisper";
+      const isAlternativeUsed = data.language === "alternative";
+      const isFallbackUsed = data.language === "fallback";
+      
+      if (isWhisperUsed) {
+        // Whisper 사용된 경우 프로그레스 조정
+        clearInterval(progressInterval);
+        progressInterval = simulateProgress(true);
+        
+        // Whisper 프로그레스가 완료될 때까지 대기
+        await new Promise(resolve => setTimeout(resolve, 8000));
+      }
+      
       setProgress(100);
       setProgressText("완료!");
+      
+      // 사용된 방법에 따라 메서드 표시
+      let methodText = "YouTube API + AI";
+      if (isWhisperUsed) methodText = "Whisper + AI";
+      else if (isAlternativeUsed) methodText = "대안적 추출 + AI";
+      else if (isFallbackUsed) methodText = "기본 메시지";
+      
+      setMethod(methodText);
       setSummary(data.summary || "요약 결과가 없습니다.");
     } catch (e) {
-      setError(e.message || "요청 중 오류가 발생했습니다.");
-    } finally {
+      // 오류 발생 시 즉시 프로그레스 바 중단
       if (progressInterval) {
         clearInterval(progressInterval);
       }
+      setProgress(0);
+      setProgressText("");
+      setMethod("");
+      
+      // 오류 메시지 개선
+      let errorMessage = e.message || "요청 중 오류가 발생했습니다.";
+      if (errorMessage.includes("봇 감지") || errorMessage.includes("접근 제한") || errorMessage.includes("모두 접근이 제한")) {
+        errorMessage = "🚫 YouTube 접근이 제한되었습니다. 잠시 후 다시 시도해 주세요.";
+      } else if (errorMessage.includes("자막을 찾을 수 없습니다")) {
+        errorMessage = "📝 해당 영상에는 자막이 없습니다. 자막이 있는 영상을 시도해 주세요.";
+      } else if (errorMessage.includes("서버 오류")) {
+        errorMessage = "🔧 서버에 일시적인 문제가 발생했습니다. 잠시 후 다시 시도해 주세요.";
+      } else if (errorMessage.includes("Whisper를 시도했지만 실패")) {
+        errorMessage = "⚠️ YouTube 접근 제한으로 대안 방법도 실패했습니다. 잠시 후 다시 시도해 주세요.";
+      }
+      
+      setError(errorMessage);
+    } finally {
       setLoading(false);
-      // 완료 후 1초 뒤 진행바 숨김
-      setTimeout(() => {
-        setProgress(0);
-        setProgressText("");
-      }, 1000);
     }
   };
 
@@ -146,7 +192,14 @@ export default function Home() {
         {loading && progress > 0 && (
           <div style={{ marginTop: 20, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 12, padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <span style={{ fontSize: 14, fontWeight: 500 }}>{progressText}</span>
+              <div>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>{progressText}</span>
+                {method && (
+                  <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", marginTop: 2 }}>
+                    사용 방법: {method}
+                  </div>
+                )}
+              </div>
               <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>{progress}%</span>
             </div>
             <div style={{ 
@@ -159,11 +212,25 @@ export default function Home() {
               <div style={{ 
                 width: `${progress}%`, 
                 height: "100%", 
-                background: "linear-gradient(90deg, #6A7DFF, #9B59B6)", 
+                background: method?.includes("Whisper") 
+                  ? "linear-gradient(90deg, #FF6B6B, #FF8E53)" 
+                  : method?.includes("대안적") || method?.includes("기본")
+                  ? "linear-gradient(90deg, #FFA726, #FF7043)"
+                  : "linear-gradient(90deg, #6A7DFF, #9B59B6)", 
                 borderRadius: 3,
                 transition: "width 0.3s ease-in-out"
               }} />
             </div>
+            {method?.includes("Whisper") && (
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", marginTop: 8, textAlign: "center" }}>
+                💡 Whisper 사용 시 오디오 다운로드로 인해 시간이 더 걸릴 수 있습니다
+              </div>
+            )}
+            {(method?.includes("대안적") || method?.includes("기본")) && (
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", marginTop: 8, textAlign: "center" }}>
+                ⚠️ YouTube 접근 제한으로 인해 제한된 정보만 제공됩니다
+              </div>
+            )}
           </div>
         )}
         {summary && (
