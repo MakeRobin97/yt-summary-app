@@ -98,6 +98,29 @@ export default function Home() {
         {error && (
           <div style={{ marginTop: 12, color: "#FF9E9E" }}>{error}</div>
         )}
+        {loading && progress > 0 && (
+          <div style={{ marginTop: 20, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 12, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 500 }}>{progressText}</span>
+              <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>{progress}%</span>
+            </div>
+            <div style={{ 
+              width: "100%", 
+              height: 6, 
+              background: "rgba(255,255,255,0.1)", 
+              borderRadius: 3, 
+              overflow: "hidden" 
+            }}>
+              <div style={{ 
+                width: `${progress}%`, 
+                height: "100%", 
+                background: "linear-gradient(90deg, #6A7DFF, #9B59B6)", 
+                borderRadius: 3,
+                transition: "width 0.3s ease-in-out"
+              }} />
+            </div>
+          </div>
+        )}
         {summary && (
           <div style={{ marginTop: 20, background:"rgba(255,255,255,0.06)", border:"1px solid rgba(255,255,255,0.18)", borderRadius: 12, padding: 16 }}>
             <div style={{ fontWeight: 700, marginBottom: 8 }}>요약 결과</div>

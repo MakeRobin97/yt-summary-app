@@ -111,26 +111,82 @@ def _is_429_error(error_msg: str) -> bool:
 
 
 def _download_audio_with_ytdlp(video_id: str) -> str:
-    """yt-dlp로 오디오 다운로드 후 Whisper로 전사"""
+    """yt-dlp로 오디오 다운로드 후 Whisper로 전사 (다중 시도)"""
     temp_dir = tempfile.mkdtemp()
     try:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
-            'extractaudio': True,
-            'audioformat': 'wav',
-            'noplaylist': True,
-            'quiet': True,
-        }
+        # 여러 시도 방법
+        strategies = [
+            # 전략 1: 기본 설정
+            {
+                'format': 'bestaudio/best',
+                'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
+                'extractaudio': True,
+                'audioformat': 'wav',
+                'noplaylist': True,
+                'quiet': True,
+                'extractor_retries': 3,
+                'retries': 3,
+                'sleep_interval': 1,
+            },
+            # 전략 2: 강화된 우회 설정
+            {
+                'format': 'bestaudio/best',
+                'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
+                'extractaudio': True,
+                'audioformat': 'wav',
+                'noplaylist': True,
+                'quiet': True,
+                'extractor_retries': 5,
+                'fragment_retries': 5,
+                'retries': 5,
+                'sleep_interval': 2,
+                'max_sleep_interval': 10,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                },
+                'geo_bypass': True,
+                'geo_bypass_country': 'US',
+            },
+            # 전략 3: 최소 설정
+            {
+                'format': 'worstaudio/worst',
+                'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
+                'noplaylist': True,
+                'quiet': True,
+                'retries': 1,
+            }
+        ]
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            ydl.download([url])
-            
+        last_error = None
+        for i, ydl_opts in enumerate(strategies):
+            try:
+                print(f"yt-dlp 시도 {i+1}/{len(strategies)}")
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    url = f"https://www.youtube.com/watch?v={video_id}"
+                    ydl.download([url])
+                
+                # 다운로드된 오디오 파일 찾기
+                audio_files = [f for f in os.listdir(temp_dir) if f.endswith(('.wav', '.mp3', '.m4a', '.webm', '.ogg'))]
+                if audio_files:
+                    break
+                else:
+                    raise Exception("오디오 파일을 찾을 수 없습니다.")
+                    
+            except Exception as e:
+                last_error = e
+                print(f"yt-dlp 시도 {i+1} 실패: {str(e)}")
+                if i < len(strategies) - 1:
+                    time.sleep(3)  # 다음 시도 전 대기
+                    continue
+                else:
+                    raise e
+        
         # 다운로드된 오디오 파일 찾기
-        audio_files = [f for f in os.listdir(temp_dir) if f.endswith(('.wav', '.mp3', '.m4a'))]
+        audio_files = [f for f in os.listdir(temp_dir) if f.endswith(('.wav', '.mp3', '.m4a', '.webm', '.ogg'))]
         if not audio_files:
-            raise Exception("오디오 파일을 찾을 수 없습니다.")
+            raise Exception(f"모든 시도 실패. 마지막 오류: {str(last_error)}")
         
         audio_path = os.path.join(temp_dir, audio_files[0])
         
