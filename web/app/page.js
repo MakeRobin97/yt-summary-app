@@ -6,6 +6,8 @@ export default function Home() {
   const [summary, setSummary] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [progressText, setProgressText] = useState("");
 
   // 배포 환경에서 모바일 혼합 콘텐츠(https 페이지 -> http API) 차단 방지
   let API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://yt-summary-api-iu5d.onrender.com";
@@ -16,6 +18,29 @@ export default function Home() {
     }
   }
 
+  const simulateProgress = () => {
+    const steps = [
+      { progress: 10, text: "영상 정보 확인 중..." },
+      { progress: 25, text: "자막 추출 중..." },
+      { progress: 50, text: "자막 분석 중..." },
+      { progress: 75, text: "AI 요약 생성 중..." },
+      { progress: 90, text: "최종 정리 중..." },
+    ];
+    
+    let currentStep = 0;
+    const interval = setInterval(() => {
+      if (currentStep < steps.length) {
+        setProgress(steps[currentStep].progress);
+        setProgressText(steps[currentStep].text);
+        currentStep++;
+      } else {
+        clearInterval(interval);
+      }
+    }, 1000);
+    
+    return interval;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
@@ -24,23 +49,43 @@ export default function Home() {
       setError("유효한 유튜브 링크를 입력해 주세요");
       return;
     }
+    
+    let progressInterval;
     try {
       setLoading(true);
+      setProgress(0);
+      setProgressText("요약을 시작합니다...");
+      
+      // 진행 상황 시뮬레이션 시작
+      progressInterval = simulateProgress();
+      
       const res = await fetch(`${API_BASE}/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
       });
+      
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || `서버 오류 (${res.status})`);
       }
+      
       const data = await res.json();
+      setProgress(100);
+      setProgressText("완료!");
       setSummary(data.summary || "요약 결과가 없습니다.");
     } catch (e) {
       setError(e.message || "요청 중 오류가 발생했습니다.");
     } finally {
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
       setLoading(false);
+      // 완료 후 1초 뒤 진행바 숨김
+      setTimeout(() => {
+        setProgress(0);
+        setProgressText("");
+      }, 1000);
     }
   };
 
