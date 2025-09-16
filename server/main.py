@@ -65,8 +65,8 @@ def extract_video_id(youtube_url: str) -> Optional[str]:
 
 
 def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
-    ytt_api = YouTubeTranscriptApi()
-    transcript_list = ytt_api.list(video_id)
+    # youtube-transcript-api는 정적 메서드 list_transcripts(video_id)를 사용합니다.
+    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
     lang_code: Optional[str] = None
     transcript = None
 
