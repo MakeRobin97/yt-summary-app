@@ -8,7 +8,7 @@ export default function Home() {
   const [error, setError] = useState("");
 
   // 배포 환경에서 모바일 혼합 콘텐츠(https 페이지 -> http API) 차단 방지
-  let API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+  let API_BASE = process.env.NEXT_PUBLIC_API_BASE || "https://yt-summary-api-iu5d.onrender.com";
   if (typeof window !== "undefined") {
     const isHttpsPage = window.location?.protocol === "https:";
     if (isHttpsPage && API_BASE.startsWith("http://")) {
