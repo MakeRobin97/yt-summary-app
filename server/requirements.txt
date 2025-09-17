@@ -5,8 +5,9 @@ openai==1.51.2
 httpx==0.28.1
 youtube-transcript-api==0.6.2
 yt-dlp==2024.12.13
-selenium==4.15.0
-undetected-chromedriver==3.5.4
-playwright==1.40.0
-requests-html==0.10.0
+# 고급 기능 (선택적 설치)
+# selenium==4.15.0
+# undetected-chromedriver==3.5.4
+# playwright==1.40.0
+# requests-html==0.10.0
 

@@ -270,13 +270,13 @@ def get_video_duration(video_id: str) -> int:
         return 0
 
 def _download_audio_with_advanced_stealth(video_id: str) -> str:
-    """고급 스텔스 기법으로 오디오 다운로드"""
+    """고급 스텔스 기법으로 오디오 다운로드 (메모리 최적화)"""
     temp_dir = tempfile.mkdtemp()
     try:
         print(f"🕵️ 고급 스텔스 다운로드 시작: {video_id}")
         
-        # 1. 랜덤 지연 (인간적인 행동 시뮬레이션)
-        time.sleep(random.uniform(1, 3))
+        # 1. 랜덤 지연 (인간적인 행동 시뮬레이션) - 단축
+        time.sleep(random.uniform(0.5, 1.5))
         
         # 2. 더 정교한 User-Agent 로테이션
         user_agents = [
@@ -410,7 +410,7 @@ def _download_audio_with_advanced_stealth(video_id: str) -> str:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 def _download_audio_with_selenium(video_id: str) -> str:
-    """Selenium을 사용한 실제 브라우저 자동화"""
+    """Selenium을 사용한 실제 브라우저 자동화 (선택적)"""
     try:
         print(f"🌐 Selenium 브라우저 자동화 시작: {video_id}")
         
@@ -607,7 +607,16 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
     except Exception as e:
         print(f"❌ YouTube API 실패: {str(e)}")
     
-    # 2단계: 고급 스텔스 Whisper 시도
+    # 2단계: 일반 Whisper 시도 (안정적)
+    try:
+        print(f"🎵 Whisper로 자막 추출 시작: {video_id}")
+        whisper_text = _download_audio_with_ytdlp(video_id)
+        print("✨ Whisper로 자막 추출 완료!")
+        return whisper_text, "whisper"
+    except Exception as e:
+        print(f"❌ Whisper 실패: {str(e)}")
+    
+    # 3단계: 고급 스텔스 Whisper 시도 (선택적)
     try:
         print(f"🕵️ 고급 스텔스 Whisper로 자막 추출 시작: {video_id}")
         whisper_text = _download_audio_with_advanced_stealth(video_id)
@@ -616,7 +625,7 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
     except Exception as e:
         print(f"❌ 고급 스텔스 Whisper 실패: {str(e)}")
     
-    # 3단계: Selenium 브라우저 자동화 시도
+    # 4단계: Selenium 브라우저 자동화 시도 (선택적)
     try:
         print(f"🌐 Selenium 브라우저 자동화 시도: {video_id}")
         selenium_text = _download_audio_with_selenium(video_id)
@@ -625,15 +634,6 @@ def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
             return selenium_text, "selenium"
     except Exception as e:
         print(f"❌ Selenium 브라우저 자동화 실패: {str(e)}")
-    
-    # 4단계: 일반 Whisper 시도
-    try:
-        print(f"🎵 일반 Whisper로 자막 추출 시작: {video_id}")
-        whisper_text = _download_audio_with_ytdlp(video_id)
-        print("✨ 일반 Whisper로 자막 추출 완료!")
-        return whisper_text, "whisper"
-    except Exception as e:
-        print(f"❌ 일반 Whisper 실패: {str(e)}")
     
     # 5단계: 대안적 추출 방법 시도
     try:
