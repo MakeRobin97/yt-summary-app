@@ -13,7 +13,6 @@ export default function Home() {
   const [showTimeoutMessage, setShowTimeoutMessage] = useState(false);
   const [estimatedTime, setEstimatedTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
-  const [progressInterval, setProgressInterval] = useState(null);
   
   // 대화 기능 상태
   const [chatMessage, setChatMessage] = useState("");
@@ -59,10 +58,6 @@ export default function Home() {
       }, 10000);
     } else {
       setDots("");
-      if (progressInterval) {
-        clearInterval(progressInterval);
-        setProgressInterval(null);
-      }
     }
 
     return () => {
