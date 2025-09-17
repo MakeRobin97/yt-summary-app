@@ -19,12 +19,35 @@ import youtube_transcript_api as yta
 import yt_dlp
 import tempfile
 import shutil
+import hashlib
+import json
 
 # .env 로드 (server 폴더 기준)
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", encoding="utf-8", override=True)
 
 # 환경변수만 사용 (하드코딩 금지)
 
+# 간단한 메모리 캐시 (실제 운영에서는 Redis 사용 권장)
+CACHE = {}
+
+def get_cache_key(video_id: str) -> str:
+    """비디오 ID로 캐시 키 생성"""
+    return f"video_{video_id}"
+
+def get_cached_result(video_id: str) -> Optional[dict]:
+    """캐시에서 결과 조회"""
+    cache_key = get_cache_key(video_id)
+    return CACHE.get(cache_key)
+
+def set_cached_result(video_id: str, result: dict) -> None:
+    """결과를 캐시에 저장"""
+    cache_key = get_cache_key(video_id)
+    CACHE[cache_key] = result
+    # 메모리 사용량 제한 (최대 100개 항목)
+    if len(CACHE) > 100:
+        # 가장 오래된 항목 제거
+        oldest_key = next(iter(CACHE))
+        del CACHE[oldest_key]
 
 app = FastAPI(title="yt-summary-api")
 
@@ -55,7 +78,7 @@ def version():
         "youtube_transcript_api": getattr(yta, "__version__", None),
         "yt_dlp": getattr(yt_dlp, "__version__", None),
         "openai": os.getenv("OPENAI_API_KEY") is not None,
-        "features": ["youtube_api", "whisper_fallback"],
+        "features": ["whisper_only"],
     }
 
 
@@ -66,6 +89,14 @@ class SummarizeRequest(BaseModel):
 class SummarizeResponse(BaseModel):
     language: Optional[str]
     summary: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    response: str
 
 
 def extract_video_id(youtube_url: str) -> Optional[str]:
@@ -181,142 +212,89 @@ def _try_alternative_extraction(video_id: str) -> str:
         return f"죄송합니다. 영상 ID {video_id}의 자막을 추출할 수 없습니다. 오류: {str(e)}"
 
 
+def get_video_duration(video_id: str) -> int:
+    """영상 길이를 초 단위로 가져오기"""
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+            },
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            info = ydl.extract_info(url, download=False)
+            duration = info.get('duration', 0)
+            return int(duration) if duration else 0
+    except Exception as e:
+        print(f"영상 길이 가져오기 실패: {str(e)}")
+        return 0
+
 def _download_audio_with_ytdlp(video_id: str) -> str:
-    """yt-dlp로 오디오 다운로드 후 Whisper로 전사 (다중 시도)"""
+    """yt-dlp로 오디오 다운로드 후 Whisper로 전사 (YouTube API 완전 우회)"""
     temp_dir = tempfile.mkdtemp()
     try:
-        # 여러 시도 방법
-        strategies = [
-            # 전략 1: 쿠키 기반 인증 + 강화된 우회
-            {
-                'format': 'bestaudio/best',
-                'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
-                'extractaudio': True,
-                'audioformat': 'wav',
-                'noplaylist': True,
-                'quiet': True,
-                'extractor_retries': 5,
-                'retries': 5,
-                'sleep_interval': 3,
-                'max_sleep_interval': 15,
-                'cookiesfrombrowser': ['chrome', 'firefox', 'safari', 'edge'],
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Cache-Control': 'max-age=0',
-                },
-                'geo_bypass': True,
-                'geo_bypass_country': 'US',
-                'no_check_certificate': True,
-            },
-            # 전략 2: 강화된 우회 설정
-            {
-                'format': 'bestaudio/best',
-                'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
-                'extractaudio': True,
-                'audioformat': 'wav',
-                'noplaylist': True,
-                'quiet': True,
-                'extractor_retries': 5,
-                'fragment_retries': 5,
-                'retries': 5,
-                'sleep_interval': 2,
-                'max_sleep_interval': 10,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                },
-                'geo_bypass': True,
-                'geo_bypass_country': 'US',
-                'no_check_certificate': True,
-            },
-            # 전략 3: 모바일 User-Agent
-            {
-                'format': 'bestaudio/best',
-                'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
-                'extractaudio': True,
-                'audioformat': 'wav',
-                'noplaylist': True,
-                'quiet': True,
-                'retries': 3,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                },
-            },
-            # 전략 4: 최소 설정
-            {
-                'format': 'worstaudio/worst',
-                'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
-                'noplaylist': True,
-                'quiet': True,
-                'retries': 1,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-                },
-            }
-        ]
+        print(f"🎬 Whisper 테스트: {video_id}")
         
-        last_error = None
-        for i, ydl_opts in enumerate(strategies):
+        # 최적화된 yt-dlp 설정으로 시도
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio',  # M4A 우선 (더 빠름)
+            'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
+            'noplaylist': True,
+            'quiet': True,
+            'retries': 1,  # 재시도 최소화
+            'fragment_retries': 1,  # 프래그먼트 재시도 최소화
+            'socket_timeout': 30,  # 소켓 타임아웃 단축
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+            },
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],  # DASH/HLS 스킵으로 더 빠른 다운로드
+                }
+            }
+        }
+        
+        print(f"📥 yt-dlp 다운로드 시도: https://www.youtube.com/watch?v={video_id}")
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            url = f"https://www.youtube.com/watch?v={video_id}"
             try:
-                print(f"yt-dlp 시도 {i+1}/{len(strategies)}")
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    url = f"https://www.youtube.com/watch?v={video_id}"
-                    ydl.download([url])
-                
-                # 다운로드된 오디오 파일 찾기
-                audio_files = [f for f in os.listdir(temp_dir) if f.endswith(('.wav', '.mp3', '.m4a', '.webm', '.ogg'))]
-                if audio_files:
-                    print(f"yt-dlp 시도 {i+1} 성공!")
-                    break
-                else:
-                    raise Exception("오디오 파일을 찾을 수 없습니다.")
-                    
+                ydl.download([url])
+                print("✅ yt-dlp 다운로드 성공!")
             except Exception as e:
-                last_error = e
-                print(f"yt-dlp 시도 {i+1} 실패: {str(e)}")
+                error_msg = str(e)
+                print(f"❌ yt-dlp 다운로드 실패: {error_msg}")
                 
-                # 접근 제한 오류인 경우 즉시 실패
-                if _is_access_restricted_error(str(e)):
-                    print("접근 제한 오류로 인해 즉시 실패")
-                    raise Exception(f"YouTube 접근 제한으로 인해 오디오 다운로드가 차단되었습니다: {str(e)}")
-                
-                if i < len(strategies) - 1:
-                    time.sleep(3)  # 다음 시도 전 대기
-                    continue
+                # YouTube 접근 제한인지 확인
+                if any(keyword in error_msg.lower() for keyword in [
+                    'blocked', 'forbidden', 'access denied', 'rate limit', 
+                    'quota exceeded', 'daily limit', 'hourly limit',
+                    'client error', 'youtube', 'transcript', 'retrieve',
+                    'could not retrieve', 'transcript for the video',
+                    '접근 제한', '제한', 'restricted', 'limit', 'bot'
+                ]):
+                    raise Exception(f"YouTube 접근이 제한되었습니다. YouTube의 봇 감지로 인해 Whisper를 통한 오디오 다운로드가 차단되었습니다.")
                 else:
-                    # 모든 전략 실패 시 즉시 실패
-                    print("모든 yt-dlp 전략 실패")
-                    raise Exception(f"모든 다운로드 시도 실패. 마지막 오류: {str(last_error)}")
+                    raise Exception(f"오디오 다운로드 중 오류가 발생했습니다: {error_msg}")
         
         # 다운로드된 오디오 파일 찾기
         audio_files = [f for f in os.listdir(temp_dir) if f.endswith(('.wav', '.mp3', '.m4a', '.webm', '.ogg'))]
         if not audio_files:
-            raise Exception(f"모든 시도 실패. 마지막 오류: {str(last_error)}")
+            raise Exception("오디오 파일을 찾을 수 없습니다.")
         
         audio_path = os.path.join(temp_dir, audio_files[0])
+        print(f"🎵 오디오 파일 다운로드 완료: {audio_files[0]}")
         
         # Whisper API로 전사
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set")
         
+        print("👂 Whisper로 오디오 전사 시작...")
         http_client = httpx.Client(trust_env=False, timeout=120, follow_redirects=True)
         client = OpenAI(api_key=api_key, http_client=http_client)
         
@@ -324,105 +302,42 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
-                response_format="text"
+                response_format="text",
+                temperature=0.0,  # 일관성 있는 결과를 위해 온도 0
+                language="ko"  # 한국어 우선 처리
             )
         
+        print("✨ Whisper 전사 완료!")
         return transcript.strip()
         
+    except Exception as e:
+        print(f"Whisper 처리 중 오류: {str(e)}")
+        raise
     finally:
         # 임시 파일 정리
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def fetch_transcript_text(video_id: str) -> tuple[str, Optional[str]]:
-    """YouTube API로 자막 추출 시도, 접근 제한 시 Whisper로 폴백"""
+    """Whisper로 자막 추출"""
     try:
-        # 1단계: YouTube API로 자막 추출 시도
-        _apply_optional_proxy_from_env()
-        transcript_list = _with_backoff(YouTubeTranscriptApi.list_transcripts, video_id)
-        lang_code: Optional[str] = None
-        transcript = None
-
-        # 우선순위: 한국어 -> 영어
-        for target in ["ko", "en"]:
-            try:
-                transcript = transcript_list.find_manually_created_transcript([target])
-                lang_code = target
-                break
-            except Exception as e:
-                # 접근 제한 오류인 경우 즉시 실패
-                if _is_access_restricted_error(str(e)):
-                    print(f"자막 검색 중 접근 제한 감지: {str(e)}")
-                    raise e
-                try:
-                    transcript = transcript_list.find_transcript([target])
-                    lang_code = target
-                    break
-                except Exception as e2:
-                    # 접근 제한 오류인 경우 즉시 실패
-                    if _is_access_restricted_error(str(e2)):
-                        print(f"자막 검색 중 접근 제한 감지: {str(e2)}")
-                        raise e2
-                    continue
-
-        if transcript is None:
-            # 자동 번역으로 한국어 우선 시도, 실패 시 영어 자동 생성본
-            try:
-                transcript = transcript_list.find_transcript(["en"]).translate("ko")
-                lang_code = "ko"
-            except Exception as e:
-                # 접근 제한 오류인 경우 즉시 실패
-                if _is_access_restricted_error(str(e)):
-                    print(f"자막 번역 중 접근 제한 감지: {str(e)}")
-                    raise e
-                try:
-                    transcript = transcript_list.find_transcript(["en"])
-                    lang_code = "en"
-                except Exception as e2:
-                    # 접근 제한 오류인 경우 즉시 실패
-                    if _is_access_restricted_error(str(e2)):
-                        print(f"자막 검색 중 접근 제한 감지: {str(e2)}")
-                        raise e2
-                    raise NoTranscriptFound(video_id)
-
-        chunks = _with_backoff(transcript.fetch)
-        texts: list[str] = []
-        for part in chunks:
-            t = getattr(part, "text", None)
-            if t is None and isinstance(part, dict):
-                t = part.get("text")
-            if t:
-                texts.append(t)
-        text = " ".join(texts)
-        if not text:
-            raise NoTranscriptFound(video_id)
-        return text, lang_code
+        print(f"🎵 Whisper로 자막 추출 시작: {video_id}")
+        whisper_text = _download_audio_with_ytdlp(video_id)
+        print("✨ Whisper로 자막 추출 완료!")
+        return whisper_text, "whisper"  # Whisper는 언어 자동 감지
         
     except Exception as e:
         error_msg = str(e)
-        print(f"fetch_transcript_text에서 오류 발생: {error_msg}")
+        print(f"Whisper 전사 중 오류 발생: {error_msg}")
         
-        # 2단계: 접근 제한 오류이거나 자막을 찾을 수 없는 경우 Whisper로 폴백
-        if _is_access_restricted_error(error_msg) or isinstance(e, (TranscriptsDisabled, NoTranscriptFound)):
-            try:
-                print(f"YouTube API 접근 제한 감지, Whisper로 폴백: {error_msg}")
-                whisper_text = _download_audio_with_ytdlp(video_id)
-                return whisper_text, "whisper"  # Whisper는 언어 자동 감지
-            except Exception as whisper_error:
-                # Whisper에서도 접근 제한 오류인지 확인
-                whisper_error_msg = str(whisper_error)
-                print(f"Whisper 폴백 시도 중 오류: {whisper_error_msg}")
-                if _is_access_restricted_error(whisper_error_msg):
-                    print(f"Whisper에서도 접근 제한 감지: {whisper_error_msg}")
-                    raise Exception(f"YouTube API와 Whisper 모두 접근이 제한되었습니다. YouTube의 봇 감지로 인해 현재 요약을 생성할 수 없습니다. 잠시 후 다시 시도해 주세요.")
-                else:
-                    # Whisper에서 다른 종류의 오류 발생
-                    print(f"Whisper 폴백 실패 (기타 오류): {whisper_error_msg}")
-                    raise Exception(f"YouTube API 접근 제한으로 Whisper를 시도했지만 실패했습니다: {whisper_error_msg}")
+        # 접근 제한 오류인지 확인
+        if _is_access_restricted_error(error_msg):
+            print(f"Whisper에서 접근 제한 감지: {error_msg}")
+            raise Exception(f"YouTube 접근이 제한되었습니다. YouTube의 봇 감지로 인해 Whisper를 통한 오디오 전사가 차단되었습니다. 잠시 후 다시 시도해 주세요.")
         else:
-            # 접근 제한이 아닌 다른 오류는 그대로 전파 (즉시 실패)
-            print(f"접근 제한이 아닌 오류, 즉시 실패: {error_msg}")
-            raise
+            # 기타 오류는 그대로 전파
+            print(f"Whisper 전사 실패 (기타 오류): {error_msg}")
+            raise Exception(f"오디오 전사 중 오류가 발생했습니다: {error_msg}")
 
 
 def summarize_with_openai(transcript_text: str, lang_code: Optional[str]) -> str:
@@ -498,4 +413,98 @@ def summarize(req: SummarizeRequest):
         raise HTTPException(status_code=500, detail=f"요약 중 오류: {str(e)}")
 
     return SummarizeResponse(language=lang_code, summary=summary)
+
+
+@app.post("/summarize/{video_id}")
+def summarize_by_id(video_id: str):
+    """비디오 ID로 직접 요약하는 엔드포인트 (WebSocket 없이)"""
+    # 캐시에서 결과 확인
+    cached_result = get_cached_result(video_id)
+    if cached_result:
+        print(f"🚀 캐시에서 결과 반환: {video_id}")
+        return cached_result
+    
+    # 영상 길이 가져오기
+    duration = get_video_duration(video_id)
+    estimated_time = estimate_processing_time(duration)
+    
+    try:
+        text, lang_code = fetch_transcript_text(video_id)
+    except (TranscriptsDisabled, NoTranscriptFound):
+        raise HTTPException(status_code=404, detail="해당 영상에서 자막을 찾을 수 없습니다.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"자막 처리 중 오류: {str(e)}")
+
+    try:
+        summary = summarize_with_openai(text, lang_code)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"요약 중 오류: {str(e)}")
+
+    result = {
+        "summary": summary,
+        "language": lang_code,
+        "method": "Whisper + AI",
+        "duration": duration,
+        "estimated_time": estimated_time
+    }
+    
+    # 결과를 캐시에 저장
+    set_cached_result(video_id, result)
+    print(f"💾 결과를 캐시에 저장: {video_id}")
+    
+    return result
+
+def estimate_processing_time(duration_seconds: int) -> int:
+    """영상 길이에 따른 예상 처리 시간 계산 (초 단위)"""
+    if duration_seconds == 0:
+        return 60  # 기본값 1분
+    
+    # 15분 영상 = 70초, 5분 영상 = 48초 기준으로 선형 보간
+    # 15분(900초) -> 70초, 5분(300초) -> 48초
+    # y = ax + b 형태로 계산
+    x1, y1 = 300, 48   # 5분 -> 48초
+    x2, y2 = 900, 70   # 15분 -> 70초
+    
+    if duration_seconds <= x1:
+        # 5분 이하: 48초 고정
+        return 48
+    elif duration_seconds >= x2:
+        # 15분 이상: 70초 고정
+        return 70
+    else:
+        # 5분~15분 사이: 선형 보간
+        a = (y2 - y1) / (x2 - x1)
+        b = y1 - a * x1
+        estimated = a * duration_seconds + b
+        return int(estimated)
+
+
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(req: ChatRequest):
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY not set")
+
+        http_client = httpx.Client(trust_env=False, timeout=60, follow_redirects=True)
+        client = OpenAI(api_key=api_key, http_client=http_client)
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "당신은 도움이 되는 AI 어시스턴트입니다. 한국어로 친절하고 정확하게 답변해주세요."},
+                {"role": "user", "content": req.message},
+            ],
+            temperature=0.7,
+        )
+
+        response = completion.choices[0].message.content.strip()
+        return ChatResponse(response=response)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"대화 중 오류: {str(e)}")
 

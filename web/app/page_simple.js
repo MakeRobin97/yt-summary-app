@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 
 export default function Home() {
   const [url, setUrl] = useState("");
@@ -9,11 +9,6 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState("");
   const [method, setMethod] = useState("");
-  const [dots, setDots] = useState("");
-  const [showTimeoutMessage, setShowTimeoutMessage] = useState(false);
-  const [estimatedTime, setEstimatedTime] = useState(0);
-  const [videoDuration, setVideoDuration] = useState(0);
-  const [progressInterval, setProgressInterval] = useState(null);
   
   // 대화 기능 상태
   const [chatMessage, setChatMessage] = useState("");
@@ -29,47 +24,9 @@ export default function Home() {
     }
     // 로컬 개발 환경 감지
     if (window.location?.hostname === "localhost" || window.location?.hostname === "127.0.0.1") {
-      API_BASE = "http://127.0.0.1:8000";
+      API_BASE = "http://127.0.0.1:8001";
     }
   }
-
-  // 점 애니메이션과 진행률 증가
-  useEffect(() => {
-    let dotInterval;
-    let progressTimer;
-
-    if (loading && progress >= 5 && progress < 95) {
-      // 점 애니메이션 시작 (1-2-3-1-2-3 패턴)
-      let dotCount = 0;
-      dotInterval = setInterval(() => {
-        const patterns = [".", "..", "...", ".", "..", "..."];
-        setDots(patterns[dotCount % patterns.length]);
-        dotCount++;
-      }, 600);
-
-      // 10초마다 5%씩 증가 (부드러운 애니메이션)
-      progressTimer = setInterval(() => {
-        setProgress(prev => {
-          if (prev >= 95) {
-            clearInterval(progressTimer);
-            return prev;
-          }
-          return prev + 5;
-        });
-      }, 10000);
-    } else {
-      setDots("");
-      if (progressInterval) {
-        clearInterval(progressInterval);
-        setProgressInterval(null);
-      }
-    }
-
-    return () => {
-      if (dotInterval) clearInterval(dotInterval);
-      if (progressTimer) clearInterval(progressTimer);
-    };
-  }, [loading, progress]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -82,8 +39,8 @@ export default function Home() {
     
     try {
       setLoading(true);
-      setProgress(5);
-      setProgressText("유튜브 영상을 다운받고 있어요! 🎬");
+      setProgress(0);
+      setProgressText("요약을 시작합니다...");
       setMethod("Whisper");
       
       // 비디오 ID 추출
@@ -92,42 +49,48 @@ export default function Home() {
         throw new Error("유효한 유튜브 링크가 아닙니다.");
       }
       
-      // 일반 HTTP 요청으로 요약 요청
-      const response = await fetch(`${API_BASE}/summarize/${videoId}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
+      // WebSocket 연결로 실시간 진행률 받기
+      const wsUrl = API_BASE.replace('http', 'ws') + `/ws/${videoId}`;
+      const ws = new WebSocket(wsUrl);
       
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || "요약 요청에 실패했습니다.");
-      }
-      
-      const data = await response.json();
-      
-      if (data.error) {
-        setError(`요약 오류: ${data.error}`);
-        setLoading(false);
-        return;
-      }
-      
-      // 영상 길이와 예상 시간 설정
-      if (data.duration && data.estimated_time) {
-        setVideoDuration(data.duration);
-        setEstimatedTime(data.estimated_time);
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
         
-        // 영상을 다운받고 있다는 메시지로 변경
-        setProgressText("영상을 다운받고 있어요");
-      }
+        if (data.error) {
+          setError(`요약 오류: ${data.error}`);
+          setLoading(false);
+          return;
+        }
+        
+        if (data.summary) {
+          // 완료
+          setProgress(100);
+          setProgressText("완료! ✨");
+          setMethod(data.method || "Whisper + AI");
+          setSummary(data.summary);
+          setLoading(false);
+          ws.close();
+          return;
+        }
+        
+        // 진행률 업데이트
+        setProgress(data.progress);
+        setProgressText(data.text);
+        setMethod(data.method);
+      };
       
-      // 완료
-      setProgress(100);
-      setProgressText("완료! ✨");
-      setMethod(data.method || "Whisper + AI");
-      setSummary(data.summary);
-      setLoading(false);
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setError("연결 오류가 발생했습니다. 다시 시도해주세요.");
+        setLoading(false);
+      };
+      
+      ws.onclose = () => {
+        if (loading) {
+          setError("연결이 끊어졌습니다. 다시 시도해주세요.");
+          setLoading(false);
+        }
+      };
       
     } catch (e) {
       setError(`요약 오류: ${e.message}`);
@@ -195,21 +158,14 @@ export default function Home() {
   };
 
   return (
-    <>
-      <style jsx>{`
-        @keyframes shimmer {
-          0% { left: -100%; }
-          100% { left: 100%; }
-        }
-      `}</style>
-      <div style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "linear-gradient(135deg,#0B1437,#2C3E8F)",
-        padding: 24,
-      }}>
+    <div style={{
+      minHeight: "100vh",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "linear-gradient(135deg,#0B1437,#2C3E8F)",
+      padding: 24,
+    }}>
       <div style={{
         width: "100%",
         maxWidth: 720,
@@ -263,17 +219,10 @@ export default function Home() {
           <div style={{ marginTop: 20, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 12, padding: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>
-                  {progressText}{progress >= 5 && progress < 95 ? dots : ""}
-                </span>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>{progressText}</span>
                 {method && (
                   <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", marginTop: 2 }}>
                     사용 방법: {method}
-                  </div>
-                )}
-                {estimatedTime > 0 && (
-                  <div style={{ fontSize: 12, color: "#FFD700", marginTop: 4, fontStyle: "italic" }}>
-                    ⏱️ 예상 소요시간: 약 {estimatedTime}초
                   </div>
                 )}
               </div>
@@ -291,21 +240,8 @@ export default function Home() {
                 height: "100%",
                 background: "linear-gradient(90deg, #6A7DFF, #4CAF50)",
                 borderRadius: 3,
-                transition: "width 2s ease-in-out",
-                position: "relative",
-                overflow: "hidden"
-              }}>
-                {/* 프로그레스 바 내부의 반짝이는 효과 */}
-                <div style={{
-                  position: "absolute",
-                  top: 0,
-                  left: "-100%",
-                  width: "100%",
-                  height: "100%",
-                  background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent)",
-                  animation: "shimmer 2s infinite"
-                }} />
-              </div>
+                transition: "width 0.3s ease"
+              }} />
             </div>
           </div>
         )}
@@ -319,7 +255,6 @@ export default function Home() {
           </div>
         )}
       </div>
-      </div>
-    </>
+    </div>
   );
 }
