@@ -117,6 +117,7 @@ def _apply_optional_proxy_from_env() -> None:
     if proxy:
         os.environ.setdefault("HTTP_PROXY", proxy)
         os.environ.setdefault("HTTPS_PROXY", proxy)
+        print(f"🌐 프록시 설정됨: {proxy}")
 
 
 def _with_backoff(callable_fn, *args, **kwargs):
@@ -177,33 +178,49 @@ def _fallback_simple_transcript(video_id: str) -> str:
 def _try_alternative_extraction(video_id: str) -> str:
     """대안적 추출 방법 시도"""
     try:
-        # 방법 1: 다른 YouTube 도메인 시도
+        # 다양한 User-Agent와 URL 조합 시도
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
+        ]
+        
         alternative_urls = [
             f"https://m.youtube.com/watch?v={video_id}",
             f"https://youtu.be/{video_id}",
             f"https://www.youtube.com/embed/{video_id}",
+            f"https://youtube.com/watch?v={video_id}",
+            f"https://www.youtube.com/watch?v={video_id}",
         ]
         
         for url in alternative_urls:
-            try:
-                print(f"대안 URL 시도: {url}")
-                ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': True,
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-                    },
-                }
-                
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    if info and info.get('title'):
-                        return f"영상 제목: {info.get('title', '알 수 없음')}\n\n죄송합니다. 현재 YouTube의 봇 감지로 인해 자막 추출이 제한되고 있습니다. 영상 제목만 확인할 수 있었습니다. 잠시 후 다시 시도해 주세요."
-            except Exception as e:
-                print(f"대안 URL {url} 실패: {str(e)}")
-                continue
+            for ua in user_agents:
+                try:
+                    print(f"대안 URL 시도: {url} with {ua[:50]}...")
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': True,
+                        'retries': 1,
+                        'http_headers': {
+                            'User-Agent': ua,
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Accept-Encoding': 'gzip, deflate',
+                            'Connection': 'keep-alive',
+                        },
+                    }
+                    
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        if info and info.get('title'):
+                            return f"영상 제목: {info.get('title', '알 수 없음')}\n\n죄송합니다. 현재 YouTube의 봇 감지로 인해 자막 추출이 제한되고 있습니다. 영상 제목만 확인할 수 있었습니다. 잠시 후 다시 시도해 주세요."
+                except Exception as e:
+                    print(f"대안 URL {url} with {ua[:30]}... 실패: {str(e)}")
+                    continue
                 
         # 방법 2: 기본 메시지 반환
         return f"죄송합니다. 영상 ID {video_id}의 자막을 추출할 수 없습니다. YouTube의 봇 감지로 인해 일시적으로 접근이 제한되었습니다. 잠시 후 다시 시도해 주세요."
@@ -215,12 +232,29 @@ def _try_alternative_extraction(video_id: str) -> str:
 def get_video_duration(video_id: str) -> int:
     """영상 길이를 초 단위로 가져오기"""
     try:
+        # 다양한 User-Agent 중 랜덤 선택
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        ]
+        import random
+        selected_ua = random.choice(user_agents)
+        
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': True,
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+                'User-Agent': selected_ua,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
             },
         }
         
@@ -239,23 +273,48 @@ def _download_audio_with_ytdlp(video_id: str) -> str:
     try:
         print(f"🎬 Whisper 테스트: {video_id}")
         
+        # 다양한 User-Agent와 헤더로 봇 감지 우회
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
+        ]
+        import random
+        selected_ua = random.choice(user_agents)
+        
         # 최적화된 yt-dlp 설정으로 시도
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio',  # M4A 우선 (더 빠름)
             'outtmpl': f'{temp_dir}/%(id)s.%(ext)s',
             'noplaylist': True,
             'quiet': True,
-            'retries': 1,  # 재시도 최소화
-            'fragment_retries': 1,  # 프래그먼트 재시도 최소화
-            'socket_timeout': 30,  # 소켓 타임아웃 단축
+            'retries': 3,  # 재시도 증가
+            'fragment_retries': 3,  # 프래그먼트 재시도 증가
+            'socket_timeout': 60,  # 소켓 타임아웃 증가
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+                'User-Agent': selected_ua,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Cache-Control': 'max-age=0',
             },
             'extractor_args': {
                 'youtube': {
                     'skip': ['dash', 'hls'],  # DASH/HLS 스킵으로 더 빠른 다운로드
+                    'player_skip': ['webpage'],  # 웹페이지 플레이어 스킵
                 }
-            }
+            },
+            'writethumbnail': False,  # 썸네일 다운로드 안함
+            'writeinfojson': False,  # 메타데이터 파일 안만듦
+            'writesubtitles': False,  # 자막 다운로드 안함
+            'writeautomaticsub': False,  # 자동 자막 다운로드 안함
         }
         
         print(f"📥 yt-dlp 다운로드 시도: https://www.youtube.com/watch?v={video_id}")
